@@ -5,3 +5,9 @@ target/
 *.iws
 VERSION
 Version.java
+
+*.war
+*.jar
+*.zip
+*.tgz
+*.log

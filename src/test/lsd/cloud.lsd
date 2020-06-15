@@ -1,0 +1,22 @@
+
+
+Container container = new Container()
+container.text = "Karen flew to New York yesterday. Today Nancy flew to Bloomington."
+container.language = "en"
+Data data = new Data(Uri.LIF, container)
+
+/*
+File file = new File("../inception.lif")
+Data data = Serializer.parse(file.text)
+*/
+
+// Valid types are: segmenter, tagger, lemmatizer, ner
+String type = args[0] ?: 'ner'
+
+String url = "http://vassar.lappsgrid.org/invoker/anc:stanford.cloud.${type}_1.0.0"
+WebService service = new ServiceClient(url, "tester", "tester")
+
+String json = service.execute(data.asJson())
+println groovy.json.JsonOutput.prettyPrint(json)
+
+
