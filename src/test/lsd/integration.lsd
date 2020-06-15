@@ -1,0 +1,25 @@
+#!/usr/bin/env lsd
+
+String text = "Karen flew to New York. Nancy flew to Bloomington."
+
+//String ROOT = "http://localhost:8080/stanford-1.0.0-SNAPSHOT/services"
+String ROOT = "http://129.114.17.83:8080/stanford-1.0.0-SNAPSHOT/services"
+
+Data data = new Data(Uri.TEXT, text)
+println data.asJson()
+
+['Segmenter', 'Tagger', 'Lemmatizer', 'NamedEntityRecognizer'].each { String service ->
+    println "Creating client for $service"
+    WebService client = new ServiceClient("$ROOT/$service", "tester", "tester")
+    println client.getMetadata()
+    String json = client.execute(data.asJson())
+    data = Serializer.parse(json)
+    if (Uri.LIF != data.discriminator) {
+        println "ERROR: ${data.payload}"
+    }
+    else {
+        println data.asPrettyJson()
+    }
+}
+
+println "Done."

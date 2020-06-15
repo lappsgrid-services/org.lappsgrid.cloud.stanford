@@ -1,0 +1,21 @@
+version: '3'
+services:
+  pipelines:
+    image: docker.lappsgrid.org/nlp/stanford
+    ports:
+      - 11111:11111
+      - 5672:5672
+    deploy:
+      replicas: 1
+  soap:
+    image: docker.lappsgrid.org/soap/stanford
+    ports:
+      - 8080:8080
+    deploy:
+      replicas: 1
+    secrets:
+      - rabbit.ini
+secrets:
+  rabbit.ini:
+    external: true
+

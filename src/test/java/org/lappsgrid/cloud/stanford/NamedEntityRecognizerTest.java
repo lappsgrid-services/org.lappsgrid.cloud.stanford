@@ -41,7 +41,7 @@ public class NamedEntityRecognizerTest
 		assert Discriminators.Uri.META.equals(data.getDiscriminator());
 		ServiceMetadata metadata = new ServiceMetadata((Map) data.getPayload());
 		assert Version.getVersion().equals(metadata.getVersion());
-		assert "3.9.1".equals(metadata.getToolVersion());
+		assert "3.9.2".equals(metadata.getToolVersion());
 		assert "http://www.lappsgrid.org".equals(metadata.getVendor());
 		assert Discriminators.Uri.GPL3.equals(metadata.getLicense());
 		assert Discriminators.Uri.ALL.equals(metadata.getAllow());

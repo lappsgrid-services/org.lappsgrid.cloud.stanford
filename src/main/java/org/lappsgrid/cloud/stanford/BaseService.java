@@ -14,9 +14,16 @@ import org.lappsgrid.rabbitmq.topic.PostOffice;
 import org.lappsgrid.serialization.Data;
 import org.lappsgrid.serialization.Serializer;
 import org.lappsgrid.serialization.lif.Container;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
+import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.lappsgrid.discriminator.Discriminators.Uri;
 
@@ -25,14 +32,36 @@ import static org.lappsgrid.discriminator.Discriminators.Uri;
  */
 public abstract class BaseService implements WebService
 {
+	static {
+		File propFile = new File("/etc/lapps/rabbit-nlp.ini");
+		if (!propFile.exists()) {
+			propFile = new File("/run/secrets/rabbit-nlp.ini");
+		}
+		if (propFile.exists()) {
+			Properties props = new Properties();
+			try
+			{
+				props.load(new FileReader(propFile));
+				System.setProperty("RABBIT_USERNAME", props.getProperty("RABBIT_USERNAME"));
+				System.setProperty("RABBIT_PASSWORD", props.getProperty("RABBIT_PASSWORD"));
+			}
+			catch (IOException ignored)
+			{
+//				e.printStackTrace();
+			}
+		}
+	}
+
 	static final String HOST = "rabbitmq.lappsgrid.org/nlp";
-	static final String POSTOFFICE = "distributed.nlp.stanford";
+	static final String POSTOFFICE = "stanford"; //distributed.nlp.stanford";
 	static final String STANFORD = "pipelines";
 
 	static final String SEGMENTER = "segmenter";
 	static final String POS = "pos";
 	static final String LEMMAS = "lemmas";
 	static final String NER = "ner";
+
+	private Logger logger = LoggerFactory.getLogger(BaseService.class);
 
 	private String metadata;
 
@@ -43,17 +72,21 @@ public abstract class BaseService implements WebService
 	{
 		username = System.getenv("RABBIT_USERNAME");
 		password = System.getenv("RABBIT_PASSWORD");
+		logger.info("Username: " + username);
 	}
 
 	@Override
 	public String execute(final String json)
 	{
+		logger.info("Received JSON.");
 		Data data = Serializer.parse(json);
 		String discriminator = data.getDiscriminator();
 		if (Uri.ERROR.equals(discriminator)) {
+			logger.warn("Data discriminator contained ERROR.");
 			return json;
 		}
 		if (Uri.TEXT.equals(discriminator)) {
+			logger.debug("Received TEXT");
 			String text = data.getPayload().toString();
 			Container container = new Container();
 			container.setText(text);
@@ -63,22 +96,25 @@ public abstract class BaseService implements WebService
 		}
 		else if (!Uri.LIF.equals(discriminator))
 		{
+			logger.warn("Invalid discriminator type: {}", discriminator);
 			data.setDiscriminator(Uri.ERROR);
 			data.setPayload("Invalid discriminator type: " + discriminator);
 			return data.asPrettyJson();
 		}
 
-		Object semaphore = new Object();
+//		Object semaphore = new Object();
+		Signal signal = new Signal();
 		String response = null;
 		String mbox = UUID.randomUUID().toString();
 		PostOffice po = new PostOffice(POSTOFFICE, HOST);
 		Box box = null;
 		try
 		{
-			box = new Box(semaphore, mbox);
+			box = new Box(signal, mbox);
 		}
-		catch (IOException e)
+		catch (IOException | TimeoutException e)
 		{
+			logger.error("Unable to create mailbox.", e);
 			data.setDiscriminator(Uri.ERROR);
 			data.setPayload(e.getMessage());
 			return data.asPrettyJson();
@@ -90,24 +126,23 @@ public abstract class BaseService implements WebService
 				.route(STANFORD, mbox);
 
 		po.send(message);
-		synchronized (semaphore) {
-			try
-			{
-				semaphore.wait();
-			}
-			catch (InterruptedException e)
-			{
-				Thread.currentThread().interrupt();
-			}
+		logger.debug("Sent message to {}", message.getRoute().get(0));
+		try
+		{
+			signal.await(30, TimeUnit.SECONDS);
 		}
-		box.close();
-		po.close();
+		catch (InterruptedException e)
+		{
+			Thread.currentThread().interrupt();
+		}
+		try { box.close(); } catch (Exception e) { }
+		try { po.close(); } catch (Exception e) { }
 
-		return box.getResponse();
-//		System.out.println(s);
-//		data = Serializer.parse(s);
-//		data.setPayload(container);
-//		return data.asPrettyJson();
+		response = box.getResponse();
+		if (response == null) {
+			response = new Data(Uri.ERROR, "The service did not responde.").asPrettyJson();
+		}
+		return response;
 	}
 
 	@Override
@@ -133,7 +168,7 @@ public abstract class BaseService implements WebService
 				.description("Pipelines from Stanford Core NLP")
 				.vendor("http://www.lappsgrid.org")
 				.version(Version.getVersion())
-				.toolVersion("3.9.1")
+				.toolVersion("3.9.2")
 				.requireFormats(Uri.TEXT, Uri.LIF)
 				.produceFormat(Uri.LIF)
 				.license(Uri.GPL3)
@@ -155,24 +190,23 @@ public abstract class BaseService implements WebService
 	{
 		private String exchange;
 		private String response;
-		private Object semaphore;
+		private Signal signal;
 
-		public Box(Object semaphore, String address) throws IOException
-		{
+		public Box(Signal signal, String address) throws IOException, TimeoutException {
 			super("", HOST);
-			this.semaphore = semaphore;
+			this.signal = signal;
 //		}
 //
 //		public Box(String exchange, String address, String host) throws IOException
 //		{
-			getChannel().exchangeDeclare(POSTOFFICE, "direct");
+			channel.exchangeDeclare(POSTOFFICE, "direct");
 			boolean passive = false;
 			boolean durable = true;
 			boolean exclusive = false;
 			boolean autoDelete = true;
-			Channel channel = this.getChannel();
+			Channel channel = this.channel;
 			String qName = channel.queueDeclare("", durable, exclusive, autoDelete, null).getQueue();
-			this.setQueueName(qName);
+			this.queueName = qName;
 			channel.queueBind(qName, POSTOFFICE, address);
 			channel.basicConsume(qName, false, new MailBoxConsumer(this));
 		}
@@ -181,43 +215,11 @@ public abstract class BaseService implements WebService
 		{
 			Message message = Serializer.parse(s, Message.class);
 			response = message.getBody().toString();
-			synchronized (semaphore) {
-				semaphore.notify();
-			}
+			signal.send();
 		}
 
 		public String getResponse() {
 			return this.response;
-		}
-
-		@Override
-		public Object invokeMethod(String s, Object o)
-		{
-			return null;
-		}
-
-		@Override
-		public Object getProperty(String s)
-		{
-			return null;
-		}
-
-		@Override
-		public void setProperty(String s, Object o)
-		{
-
-		}
-
-		@Override
-		public MetaClass getMetaClass()
-		{
-			return null;
-		}
-
-		@Override
-		public void setMetaClass(MetaClass metaClass)
-		{
-
 		}
 
 		class MailBoxConsumer extends DefaultConsumer
@@ -225,7 +227,7 @@ public abstract class BaseService implements WebService
 			Box box;
 
 			MailBoxConsumer(Box box) {
-				super(box.getChannel());
+				super(box.channel);
 				this.box = box;
 			}
 
